@@ -1,19 +1,18 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
+cls
 echo ==============================================
-echo 正在推送到 GitHub (Taiwan-Invoice-Web)...
+echo Pushing code to GitHub:
+echo https://github.com/appletw-hub/Taiwan-Invoice-Web
 echo ==============================================
+echo.
 git push -u origin main
+echo.
 if %errorlevel% equ 0 (
-    echo.
-    echo ----------------------------------------------
-    echo 恭喜！程式碼已成功推送到 GitHub！
-    echo 倉庫網址: https://github.com/appletw-hub/Taiwan-Invoice-Web
-    echo ----------------------------------------------
+    echo [SUCCESS] Push completed successfully!
 ) else (
-    echo.
-    echo 推送遇到狀況，若尚未在 GitHub 建立 Repository，
-    echo 請先至 https://github.com/new 建立名稱為 Taiwan-Invoice-Web 的倉庫。
+    echo [ERROR] Push failed.
+    echo Please make sure the repo exists: https://github.com/appletw-hub/Taiwan-Invoice-Web
 )
+echo.
 pause

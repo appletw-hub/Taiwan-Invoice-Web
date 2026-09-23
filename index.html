@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>台灣發票 PDF 智慧解析與核對系統</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel for inline JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- SheetJS (xlsx) for Excel Export -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+    body {
+      font-family: 'Noto Sans TC', 'Inter', system-ui, -apple-system, sans-serif;
+    }
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    // 國稅局扣抵代碼
+    const VOUCHER_FORMATS = [
+      { code: '21', label: '21 - 三聯式、電子計算機統一發票' },
+      { code: '22', label: '22 - 二聯式收銀機統一發票、載有稅額憑證' },
+      { code: '25', label: '25 - 三聯式收銀機統一發票及電子發票' },
+      { code: '28', label: '28 - 海關代徵營業稅繳納證扣抵聯' },
+      { code: '99', label: '99 - 其他憑證 / 收據' },
+    ];
+
+    // 稅別清單
+    const TAX_TYPES = [
+      { id: 'taxable', label: '應稅 (5%)', rate: 0.05 },
+      { id: 'zero_rated', label: '零稅率 (0%)', rate: 0 },
+      { id: 'exempt', label: '免稅', rate: 0 },
+    ];
+
+    // 12個核對欄位定義
+    const INVOICE_COLUMNS = [
+      { id: 'vendorName', label: '廠商名稱' },
+      { id: 'taxId', label: '統一編號' },
+      { id: 'paymentMonth', label: '貨款月份' },
+      { id: 'voucherFormat', label: '憑證格式' },
+      { id: 'invoiceDate', label: '發票日期' },
+      { id: 'invoiceNumber', label: '發票號碼' },
+      { id: 'salesAmount', label: '銷售額(未稅)', isNumber: true },
+      { id: 'taxAmount', label: '稅額(5%)', isNumber: true },
+      { id: 'totalAmount', label: '發票金額(含稅)', isNumber: true },
+      { id: 'itemsDescription', label: '品項內容' },
+      { id: 'settlementDate', label: '收付款日' },
+      { id: 'remarks', label: '備註' },
+    ];
+
+    // 稅額計算器
+    function calculateFromSales(salesAmount, taxType = 'taxable') {
+      const sales = Math.max(0, parseInt(salesAmount, 10) || 0);
+      if (taxType === 'zero_rated' || taxType === 'exempt') {
+        return { salesAmount: sales, taxAmount: 0, totalAmount: sales };
+      }
+      const tax = Math.round(sales * 0.05);
+      return { salesAmount: sales, taxAmount: tax, totalAmount: sales + tax };
+    }
+
+    function calculateFromTotal(totalAmount, taxType = 'taxable') {
+      const total = Math.max(0, parseInt(totalAmount, 10) || 0);
+      if (taxType === 'zero_rated' || taxType === 'exempt') {
+        return { salesAmount: total, taxAmount: 0, totalAmount: total };
+      }
+      const sales = Math.round(total / 1.05);
+      const tax = total - sales;
+      return { salesAmount: sales, taxAmount: tax, totalAmount: total };
+    }
+
+    // Google Gemini API 發票解析
+    async function parseInvoicesWithGemini(fileBase64, apiKey, model = 'gemini-3.1-flash-lite') {
+      if (!apiKey) {
+        throw new Error('請先在右上角設定您的 Google Gemini API Key');
+      }
+
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+      const prompt = `
+你是一位精通台灣會計與稅務發票的專家。
+這份 PDF 檔案內彙整了一張或多張發票或憑證（包含數位電子發票、掃描檔、紙本發票、收銀機發票、手機拍照圖片等）。
+
+請逐頁、逐張辨識 PDF 內所有的發票資訊，並整理成 JSON 格式。
+請嚴格遵守以下規則：
+1. 一張發票請整理為一個物件（一行一張發票）。
+2. 發票上的多個品項，請合併於 itemsDescription 欄位中（例如："文具組 x2; A4影印紙 x5"）。
+3. 國稅局憑證代碼 (voucherFormat) 請依據發票類型判斷：
+   - "21": 三聯式統一發票、電子計算機發票
+   - "22": 二聯式收銀機發票、載有稅額之其他憑證
+   - "25": 三聯式收銀機發票、電子發票證明聯(有買方統編)
+   - "28": 海關代徵營業稅繳納證
+   - "99": 其他收據或無稅額憑證
+4. 稅別 (taxType)："taxable" (應稅 5%), "zero_rated" (零稅率), "exempt" (免稅)
+5. 銷售額 (salesAmount, 未稅)、稅額 (taxAmount)、發票金額 (totalAmount, 含稅)。請輸出純整數。若為應稅且無稅額資訊，請以 5% 營業稅精確推算：
+   - salesAmount = Math.round(totalAmount / 1.05)
+   - taxAmount = totalAmount - salesAmount
+6. 發票日期 (invoiceDate) 請統一轉換為西元格式 "YYYY-MM-DD"（例如 115/03/15 -> 2026-03-15）。
+7. 貨款月份 (paymentMonth) 依發票日期產生 "YYYY-MM"。
+8. 廠商名稱 (vendorName) 與統一編號 (taxId)：提取賣方廠商名稱與 8 碼賣方統一編號。
+9. 發票號碼 (invoiceNumber)：例如 "AB-12345678"。
+10. 收付款日 (settlementDate) 與備註 (remarks)：若無請填空字串 ""。
+
+請嚴格輸出符合以下 JSON Schema 的結構：
+{
+  "invoices": [
+    {
+      "vendorName": "廠商名稱",
+      "taxId": "統一編號",
+      "paymentMonth": "YYYY-MM",
+      "voucherFormat": "25",
+      "invoiceDate": "YYYY-MM-DD",
+      "invoiceNumber": "AB-12345678",
+      "taxType": "taxable",
+      "salesAmount": 1000,
+      "taxAmount": 50,
+      "totalAmount": 1050,
+      "itemsDescription": "品項明細",
+      "settlementDate": "",
+      "remarks": ""
+    }
+  ]
+}
+`;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inlineData: { mimeType: 'application/pdf', data: fileBase64 } },
+              { text: prompt }
+            ]
+          }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err?.error?.message || `API 呼叫失敗 (狀態碼 ${response.status})`);
+      }
+
+      const resData = await response.json();
+      const rawText = resData?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawText) throw new Error('模型未回傳文字內容');
+
+      const parsed = JSON.parse(rawText);
+      return Array.isArray(parsed) ? parsed : (parsed.invoices || []);
+    }
+
+    // 主應用元件
+    function App() {
+      const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_invoice_key') || '');
+      const [model, setModel] = useState(() => {
+        const m = localStorage.getItem('gemini_invoice_model');
+        return (!m || m === 'gemini-2.5-flash' || m === 'gemini-2.0-flash') ? 'gemini-3.1-flash-lite' : m;
+      });
+      const [invoices, setInvoices] = useState(() => {
+        try {
+          const d = localStorage.getItem('invoice_table_draft');
+          return d ? JSON.parse(d) : [];
+        } catch {
+          return [];
+        }
+      });
+
+      const [isProcessing, setIsProcessing] = useState(false);
+      const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
+      const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+      const [toast, setToast] = useState(null);
+
+      // 批次欄位
+      const [batchMonth, setBatchMonth] = useState('');
+      const [batchDate, setBatchDate] = useState('');
+
+      // 匯出勾選欄位
+      const [selectedCols, setSelectedCols] = useState(INVOICE_COLUMNS.map(c => c.id));
+      const [exportFileName, setExportFileName] = useState(`發票明細表_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`);
+
+      useEffect(() => {
+        localStorage.setItem('invoice_table_draft', JSON.stringify(invoices));
+      }, [invoices]);
+
+      const notify = (msg, type = 'success') => {
+        setToast({ msg, type });
+        setTimeout(() => setToast(null), 3500);
+      };
+
+      const handleSaveKey = (key, mdl) => {
+        setApiKey(key);
+        setModel(mdl);
+        localStorage.setItem('gemini_invoice_key', key);
+        localStorage.setItem('gemini_invoice_model', mdl);
+        setIsKeyModalOpen(false);
+        notify('API Key 設定完成！');
+      };
+
+      // 處理上傳 PDF
+      const handleFileUpload = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        if (!apiKey) {
+          setIsKeyModalOpen(true);
+          return;
+        }
+
+        if (file.type !== 'application/pdf') {
+          notify('請上傳 PDF 格式檔案', 'error');
+          return;
+        }
+
+        setIsProcessing(true);
+        try {
+          const reader = new FileReader();
+          const base64 = await new Promise((resolve, reject) => {
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+
+          const results = await parseInvoicesWithGemini(base64, apiKey, model);
+          if (results.length === 0) {
+            notify('未在 PDF 中解析出發票，請確認內容是否清晰', 'error');
+          } else {
+            setInvoices(prev => [...prev, ...results]);
+            notify(`成功辨識並匯入 ${results.length} 筆發票資料！`);
+          }
+        } catch (err) {
+          notify(err.message || '解析失敗', 'error');
+        } finally {
+          setIsProcessing(false);
+          e.target.value = '';
+        }
+      };
+
+      // 表格即時修改與稅額連動
+      const handleFieldChange = (index, field, value) => {
+        const list = [...invoices];
+        const row = { ...list[index] };
+        const currentTaxType = row.taxType || 'taxable';
+
+        if (field === 'taxType') {
+          row.taxType = value;
+          const res = calculateFromSales(row.salesAmount, value);
+          row.taxAmount = res.taxAmount;
+          row.totalAmount = res.totalAmount;
+        } else if (field === 'salesAmount') {
+          const res = calculateFromSales(value, currentTaxType);
+          row.salesAmount = res.salesAmount;
+          row.taxAmount = res.taxAmount;
+          row.totalAmount = res.totalAmount;
+        } else if (field === 'totalAmount') {
+          const res = calculateFromTotal(value, currentTaxType);
+          row.salesAmount = res.salesAmount;
+          row.taxAmount = res.taxAmount;
+          row.totalAmount = res.totalAmount;
+        } else {
+          row[field] = value;
+        }
+
+        list[index] = row;
+        setInvoices(list);
+      };
+
+      // 批次套用
+      const applyBatchMonth = () => {
+        if (!batchMonth) return;
+        setInvoices(invoices.map(inv => ({ ...inv, paymentMonth: batchMonth })));
+        notify(`已將所有筆數之貨款月份更新為 ${batchMonth}`);
+      };
+
+      const applyBatchDate = () => {
+        if (!batchDate) return;
+        setInvoices(invoices.map(inv => ({ ...inv, settlementDate: batchDate })));
+        notify(`已將所有筆數之收付款日更新為 ${batchDate}`);
+      };
+
+      const addEmptyRow = () => {
+        const today = new Date().toISOString().slice(0, 10);
+        setInvoices([{
+          vendorName: '',
+          taxId: '',
+          paymentMonth: today.slice(0, 7),
+          voucherFormat: '25',
+          invoiceDate: today,
+          invoiceNumber: '',
+          taxType: 'taxable',
+          salesAmount: 0,
+          taxAmount: 0,
+          totalAmount: 0,
+          itemsDescription: '',
+          settlementDate: '',
+          remarks: ''
+        }, ...invoices]);
+      };
+
+      const deleteRow = (idx) => {
+        setInvoices(invoices.filter((_, i) => i !== idx));
+        notify('已刪除該筆資料');
+      };
+
+      const clearAll = () => {
+        if (confirm('確定清空所有發票資料？')) {
+          setInvoices([]);
+          notify('已清空所有發票清單');
+        }
+      };
+
+      // 載入展示資料
+      const loadDemo = () => {
+        setInvoices([
+          {
+            vendorName: '遠東工程顧問有限公司',
+            taxId: '23847591',
+            paymentMonth: '2026-09',
+            voucherFormat: '25',
+            invoiceDate: '2026-09-08',
+            invoiceNumber: 'QD-18293041',
+            taxType: 'taxable',
+            salesAmount: 42000,
+            taxAmount: 2100,
+            totalAmount: 44100,
+            itemsDescription: '9月份機房空調工程款與檢修費',
+            settlementDate: '2026-09-30',
+            remarks: '每月常態性支出'
+          },
+          {
+            vendorName: '良友辦公文具有限公司',
+            taxId: '84910283',
+            paymentMonth: '2026-09',
+            voucherFormat: '21',
+            invoiceDate: '2026-09-12',
+            invoiceNumber: 'QD-20491823',
+            taxType: 'taxable',
+            salesAmount: 3800,
+            taxAmount: 190,
+            totalAmount: 3990,
+            itemsDescription: 'A4影印紙 10箱; 黑色油性筆 2打',
+            settlementDate: '2026-09-20',
+            remarks: '辦公耗材'
+          },
+          {
+            vendorName: '台東縣原住民生鮮農產產銷班',
+            taxId: '91827364',
+            paymentMonth: '2026-09',
+            voucherFormat: '22',
+            invoiceDate: '2026-09-15',
+            invoiceNumber: 'QD-59381024',
+            taxType: 'exempt',
+            salesAmount: 6500,
+            taxAmount: 0,
+            totalAmount: 6500,
+            itemsDescription: '秋節慰問客戶有機水果禮盒 x10',
+            settlementDate: '2026-09-18',
+            remarks: '未加工生鮮蔬果（免稅）'
+          }
+        ]);
+        notify('已載入 3 筆發票測試範例！');
+      };
+
+      // 匯出 Excel
+      const handleExportExcel = () => {
+        if (invoices.length === 0) {
+          notify('目前沒有發票資料可供匯出', 'error');
+          return;
+        }
+
+        const activeCols = INVOICE_COLUMNS.filter(c => selectedCols.includes(c.id));
+        if (activeCols.length === 0) {
+          notify('請至少勾選一個匯出欄位', 'error');
+          return;
+        }
+
+        const voucherMap = VOUCHER_FORMATS.reduce((m, item) => ({ ...m, [item.code]: item.label }), {});
+
+        const exportData = invoices.map(inv => {
+          const row = {};
+          activeCols.forEach(col => {
+            let val = inv[col.id] ?? '';
+            if (col.id === 'voucherFormat' && voucherMap[val]) {
+              val = voucherMap[val];
+            }
+            if (col.isNumber) {
+              val = parseInt(val, 10) || 0;
+            }
+            row[col.label] = val;
+          });
+          return row;
+        });
+
+        const ws = XLSX.utils.json_to_sheet(exportData);
+        ws['!cols'] = activeCols.map(c => {
+          if (c.id === 'itemsDescription') return { wch: 32 };
+          if (c.id === 'vendorName') return { wch: 25 };
+          if (c.id === 'voucherFormat') return { wch: 26 };
+          return { wch: 15 };
+        });
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, '發票明細');
+        XLSX.writeFile(wb, exportFileName.endsWith('.xlsx') ? exportFileName : `${exportFileName}.xlsx`);
+        setIsExportModalOpen(false);
+        notify('Excel 檔案匯出成功！');
+      };
+
+      // 統計數據
+      const stats = useMemo(() => {
+        const count = invoices.length;
+        const sales = invoices.reduce((s, i) => s + (parseInt(i.salesAmount, 10) || 0), 0);
+        const tax = invoices.reduce((s, i) => s + (parseInt(i.taxAmount, 10) || 0), 0);
+        const total = invoices.reduce((s, i) => s + (parseInt(i.totalAmount, 10) || 0), 0);
+        return { count, sales, tax, total };
+      }, [invoices]);
+
+      const formatCur = (n) => new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(n);
+
+      return (
+        <div className="flex flex-col min-h-screen">
+          {/* Header */}
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-gradient-to-tr from-blue-600 to-indigo-600 text-white rounded-xl shadow-md shadow-blue-500/20">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z" />
+                  </svg>
+                </div>
+                <div>
+                  <h1 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
+                    台灣發票 PDF 智慧解析與核對系統
+                  </h1>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    多頁掃描/拍照彙整 PDF・營業稅 5% 自動推算・自選欄位匯出 Excel
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 sm:gap-3">
+                {invoices.length === 0 && (
+                  <button
+                    onClick={loadDemo}
+                    className="px-3 py-1.5 text-xs text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl font-semibold transition"
+                  >
+                    載入測試範例
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setIsKeyModalOpen(true)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition shadow-sm ${
+                    apiKey
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                      : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 animate-pulse'
+                  }`}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                  </svg>
+                  <span>{apiKey ? 'API Key 已配置' : '鍵入 API Key'}</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* Toast */}
+          {toast && (
+            <div className="fixed top-20 right-6 z-50 animate-bounce">
+              <div className={`px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold text-white ${toast.type === 'error' ? 'bg-rose-600' : 'bg-slate-900'}`}>
+                {toast.msg}
+              </div>
+            </div>
+          )}
+
+          {/* Main */}
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+            {/* 上傳卡片 */}
+            <div className="border-2 border-dashed border-slate-300 hover:border-blue-400 bg-white rounded-2xl p-8 text-center transition">
+              <input
+                type="file"
+                id="pdfUploadInput"
+                accept="application/pdf"
+                className="hidden"
+                onChange={handleFileUpload}
+                disabled={isProcessing}
+              />
+              <label htmlFor="pdfUploadInput" className="cursor-pointer block">
+                {isProcessing ? (
+                  <div className="py-4 space-y-3">
+                    <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                    <div className="text-sm font-bold text-slate-800">
+                      AI 正在多模態辨識 PDF 發票中（含手機拍照/紙本掃描與電子發票）...
+                    </div>
+                    <p className="text-xs text-slate-500">正在逐頁提取賣方統編、未稅金額、稅額與品項明細，請稍候約 5~15 秒</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
+                      <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-800">點擊此處上傳發票彙整 PDF 檔案</h3>
+                      <p className="text-xs text-slate-500 mt-1">支援所有發票集中在同一個多頁 PDF 檔中（包含手機拍照、掃描檔、電子發票）</p>
+                    </div>
+                    {!apiKey && (
+                      <div className="inline-block px-3 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg text-xs font-medium">
+                        ⚠️ 尚未配置 API Key，點擊右上角「鍵入 API Key」即可開始使用
+                      </div>
+                    )}
+                  </div>
+                )}
+              </label>
+            </div>
+
+            {/* 統計摘要卡片 */}
+            {invoices.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <div className="text-xs font-semibold text-slate-500">發票總張數</div>
+                  <div className="text-2xl font-black text-slate-900 mt-1">{stats.count} <span className="text-xs font-normal text-slate-500">張</span></div>
+                  <div className="text-[11px] text-slate-400 mt-1">目前載入待核對筆數</div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <div className="text-xs font-semibold text-slate-500">銷售額總計 (未稅)</div>
+                  <div className="text-2xl font-black text-indigo-950 mt-1">{formatCur(stats.sales)}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">應稅銷售淨額合計</div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+                  <div className="text-xs font-semibold text-slate-500">營業稅總計 (5%)</div>
+                  <div className="text-2xl font-black text-emerald-900 mt-1">{formatCur(stats.tax)}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">可提出扣抵進項稅額</div>
+                </div>
+
+                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 p-5 rounded-2xl border border-blue-200 shadow-sm">
+                  <div className="text-xs font-semibold text-blue-900">發票總金額 (含稅)</div>
+                  <div className="text-2xl font-black text-blue-950 mt-1">{formatCur(stats.total)}</div>
+                  <div className="text-[11px] text-blue-700/80 mt-1">應收 / 應付款項總額</div>
+                </div>
+              </div>
+            )}
+
+            {/* 表格工作區 */}
+            {invoices.length > 0 && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                {/* 表格工具列 */}
+                <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-slate-800">
+                      發票核對清單 ({invoices.length} 筆)
+                    </span>
+                    <span className="text-xs text-slate-500 hidden md:inline">
+                      （欄位可直接點選編輯；稅別切換會自動連動 5% 計算）
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-xl border border-slate-200">
+                      <span className="text-slate-500">批次月份:</span>
+                      <input
+                        type="text"
+                        placeholder="YYYY-MM"
+                        value={batchMonth}
+                        onChange={(e) => setBatchMonth(e.target.value)}
+                        className="w-16 px-1 border-b border-slate-300 font-mono text-xs focus:outline-none focus:border-blue-500"
+                      />
+                      <button onClick={applyBatchMonth} className="text-blue-600 font-semibold px-1 hover:underline">套用</button>
+                    </div>
+
+                    <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-xl border border-slate-200">
+                      <span className="text-slate-500">批次付款日:</span>
+                      <input
+                        type="date"
+                        value={batchDate}
+                        onChange={(e) => setBatchDate(e.target.value)}
+                        className="px-1 border-b border-slate-300 text-xs focus:outline-none focus:border-blue-500"
+                      />
+                      <button onClick={applyBatchDate} className="text-blue-600 font-semibold px-1 hover:underline">套用</button>
+                    </div>
+
+                    <button
+                      onClick={addEmptyRow}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-medium transition"
+                    >
+                      + 新增一筆
+                    </button>
+
+                    <button
+                      onClick={clearAll}
+                      className="px-3 py-1.5 text-rose-600 hover:bg-rose-50 rounded-xl font-medium transition"
+                    >
+                      清空全部
+                    </button>
+
+                    <button
+                      onClick={() => setIsExportModalOpen(true)}
+                      className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold shadow-sm transition flex items-center gap-1.5"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      <span>自選核對項目匯出 EXCEL</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 表格主體 */}
+                <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                  <table className="w-full text-xs text-left border-collapse">
+                    <thead className="bg-slate-100 text-slate-700 font-semibold sticky top-0 z-10 border-b border-slate-200">
+                      <tr>
+                        <th className="p-2.5 text-center w-10">#</th>
+                        <th className="p-2.5 min-w-[130px]">廠商名稱</th>
+                        <th className="p-2.5 min-w-[95px]">統一編號</th>
+                        <th className="p-2.5 min-w-[85px]">貨款月份</th>
+                        <th className="p-2.5 min-w-[140px]">憑證格式</th>
+                        <th className="p-2.5 min-w-[110px]">發票日期</th>
+                        <th className="p-2.5 min-w-[120px]">發票號碼</th>
+                        <th className="p-2.5 min-w-[105px]">稅別標籤</th>
+                        <th className="p-2.5 min-w-[95px] text-right">銷售額(未稅)</th>
+                        <th className="p-2.5 min-w-[85px] text-right">稅額(5%)</th>
+                        <th className="p-2.5 min-w-[100px] text-right">發票金額(含稅)</th>
+                        <th className="p-2.5 min-w-[180px]">品項內容</th>
+                        <th className="p-2.5 min-w-[110px]">收付款日</th>
+                        <th className="p-2.5 min-w-[120px]">備註</th>
+                        <th className="p-2.5 text-center w-12 sticky right-0 bg-slate-100">刪除</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {invoices.map((inv, idx) => (
+                        <tr key={idx} className="hover:bg-blue-50/40 transition">
+                          <td className="p-2 text-center text-slate-400 font-mono">{idx + 1}</td>
+
+                          {/* 廠商名稱 */}
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={inv.vendorName || ''}
+                              onChange={(e) => handleFieldChange(idx, 'vendorName', e.target.value)}
+                              className="w-full px-2 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs"
+                              placeholder="廠商名稱"
+                            />
+                          </td>
+
+                          {/* 統一編號 */}
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              maxLength={8}
+                              value={inv.taxId || ''}
+                              onChange={(e) => handleFieldChange(idx, 'taxId', e.target.value)}
+                              className="w-full px-2 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono"
+                              placeholder="8碼統編"
+                            />
+                          </td>
+
+                          {/* 貨款月份 */}
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={inv.paymentMonth || ''}
+                              onChange={(e) => handleFieldChange(idx, 'paymentMonth', e.target.value)}
+                              className="w-full px-2 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono"
+                              placeholder="YYYY-MM"
+                            />
+                          </td>
+
+                          {/* 憑證格式 */}
+                          <td className="p-1.5">
+                            <select
+                              value={inv.voucherFormat || '25'}
+                              onChange={(e) => handleFieldChange(idx, 'voucherFormat', e.target.value)}
+                              className="w-full px-1.5 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs"
+                            >
+                              {VOUCHER_FORMATS.map(vf => (
+                                <option key={vf.code} value={vf.code}>{vf.label}</option>
+                              ))}
+                            </select>
+                          </td>
+
+                          {/* 發票日期 */}
+                          <td className="p-1.5">
+                            <input
+                              type="date"
+                              value={inv.invoiceDate || ''}
+                              onChange={(e) => handleFieldChange(idx, 'invoiceDate', e.target.value)}
+                              className="w-full px-1.5 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono"
+                            />
+                          </td>
+
+                          {/* 發票號碼 */}
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={inv.invoiceNumber || ''}
+                              onChange={(e) => handleFieldChange(idx, 'invoiceNumber', e.target.value)}
+                              className="w-full px-2 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono font-medium text-blue-900"
+                              placeholder="AB-12345678"
+                            />
+                          </td>
+
+                          {/* 稅別標籤 */}
+                          <td className="p-1.5">
+                            <select
+                              value={inv.taxType || 'taxable'}
+                              onChange={(e) => handleFieldChange(idx, 'taxType', e.target.value)}
+                              className={`w-full px-1.5 py-1 rounded text-[11px] font-semibold border ${
+                                (inv.taxType || 'taxable') === 'taxable'
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                  : inv.taxType === 'zero_rated'
+                                  ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              }`}
+                            >
+                              {TAX_TYPES.map(tt => (
+                                <option key={tt.id} value={tt.id}>{tt.label}</option>
+                              ))}
+                            </select>
+                          </td>
+
+                          {/* 銷售額 */}
+                          <td className="p-1.5">
+                            <input
+                              type="number"
+                              value={inv.salesAmount ?? ''}
+                              onChange={(e) => handleFieldChange(idx, 'salesAmount', e.target.value)}
+                              className="w-full px-2 py-1 text-right border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono font-semibold text-slate-800"
+                            />
+                          </td>
+
+                          {/* 稅額 */}
+                          <td className="p-1.5">
+                            <input
+                              type="number"
+                              value={inv.taxAmount ?? ''}
+                              onChange={(e) => handleFieldChange(idx, 'taxAmount', e.target.value)}
+                              className="w-full px-2 py-1 text-right border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono font-semibold text-emerald-700"
+                            />
+                          </td>
+
+                          {/* 發票總金額 */}
+                          <td className="p-1.5">
+                            <input
+                              type="number"
+                              value={inv.totalAmount ?? ''}
+                              onChange={(e) => handleFieldChange(idx, 'totalAmount', e.target.value)}
+                              className="w-full px-2 py-1 text-right border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono font-black text-indigo-900"
+                            />
+                          </td>
+
+                          {/* 品項內容 */}
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={inv.itemsDescription || ''}
+                              onChange={(e) => handleFieldChange(idx, 'itemsDescription', e.target.value)}
+                              className="w-full px-2 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs"
+                              placeholder="品項規格"
+                            />
+                          </td>
+
+                          {/* 收付款日 */}
+                          <td className="p-1.5">
+                            <input
+                              type="date"
+                              value={inv.settlementDate || ''}
+                              onChange={(e) => handleFieldChange(idx, 'settlementDate', e.target.value)}
+                              className="w-full px-1.5 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono"
+                            />
+                          </td>
+
+                          {/* 備註 */}
+                          <td className="p-1.5">
+                            <input
+                              type="text"
+                              value={inv.remarks || ''}
+                              onChange={(e) => handleFieldChange(idx, 'remarks', e.target.value)}
+                              className="w-full px-2 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs"
+                              placeholder="備註說明"
+                            />
+                          </td>
+
+                          {/* 刪除 */}
+                          <td className="p-1.5 text-center sticky right-0 bg-white">
+                            <button
+                              onClick={() => deleteRow(idx)}
+                              className="p-1 text-slate-400 hover:text-rose-600 rounded transition"
+                              title="刪除此筆"
+                            >
+                              ✕
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </main>
+
+          {/* Footer */}
+          <footer className="border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-400">
+            所有發票資料與金鑰均保存在當前使用者瀏覽器端，保證隱私與帳務安全。
+          </footer>
+
+          {/* API Key Modal */}
+          {isKeyModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-100">
+                <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6 text-white">
+                  <h2 className="text-xl font-bold">API Key 設定</h2>
+                  <p className="text-blue-100 text-xs mt-1">每位使用者使用自己專屬的金鑰，本機加密儲存</p>
+                </div>
+
+                <div className="p-6 space-y-4">
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900">
+                    <strong>隱私安全承諾：</strong> 您的 API Key 僅保存在本機瀏覽器的 LocalStorage 中，解析發票時是由您的瀏覽器直接向 Google 官方 API 發送請求，伺服器不保存任何資料。
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-2">Google Gemini API Key</label>
+                    <input
+                      type="password"
+                      id="keyInput"
+                      defaultValue={apiKey}
+                      placeholder="AIzaSy..."
+                      className="w-full px-4 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 font-mono"
+                    />
+                    <div className="mt-2 text-xs">
+                      <a
+                        href="https://aistudio.google.com/app/apikey"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 hover:underline font-medium"
+                      >
+                        前往 Google AI Studio 免費申請 API Key →
+                      </a>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-2">辨識模型</label>
+                    <select
+                      id="modelSelect"
+                      defaultValue={model}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 bg-white"
+                    >
+                      <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (超輕量、極速辨識)</option>
+                      <option value="gemini-3.6-flash">Gemini 3.6 Flash (最新旗艦款)</option>
+                      <option value="gemini-2.0-flash">Gemini 2.0 Flash (穩定推薦款)</option>
+                      <option value="gemini-1.5-flash">Gemini 1.5 Flash (經典穩定版)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 px-6 py-4 flex justify-end gap-3 border-t border-slate-100">
+                  <button
+                    onClick={() => setIsKeyModalOpen(false)}
+                    className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-200 rounded-xl font-medium"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => {
+                      const k = document.getElementById('keyInput').value.trim();
+                      const m = document.getElementById('modelSelect').value;
+                      handleSaveKey(k, m);
+                    }}
+                    className="px-5 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium shadow-sm"
+                  >
+                    儲存設定
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Export Modal */}
+          {isExportModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-100">
+                <div className="bg-gradient-to-r from-emerald-600 to-teal-600 p-5 text-white flex items-center justify-between">
+                  <div>
+                    <h2 className="text-base font-bold">自選核對項目匯出 EXCEL</h2>
+                    <p className="text-emerald-100 text-xs">勾選需要產現在報表中的欄位</p>
+                  </div>
+                  <button onClick={() => setIsExportModalOpen(false)} className="text-white/80 hover:text-white text-lg">✕</button>
+                </div>
+
+                <div className="p-5 space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">檔案名稱</label>
+                    <div className="flex items-center">
+                      <input
+                        type="text"
+                        value={exportFileName}
+                        onChange={(e) => setExportFileName(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500"
+                      />
+                      <span className="ml-2 text-xs text-slate-400 font-mono">.xlsx</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs font-semibold text-slate-700">
+                        核對欄位勾選 ({selectedCols.length}/{INVOICE_COLUMNS.length})
+                      </label>
+                      <div className="flex gap-2 text-xs">
+                        <button
+                          onClick={() => setSelectedCols(INVOICE_COLUMNS.map(c => c.id))}
+                          className="text-emerald-600 hover:underline font-medium"
+                        >
+                          全選
+                        </button>
+                        <span className="text-slate-300">|</span>
+                        <button
+                          onClick={() => setSelectedCols([])}
+                          className="text-slate-500 hover:underline font-medium"
+                        >
+                          全部取消
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 max-h-56 overflow-y-auto">
+                      {INVOICE_COLUMNS.map(col => {
+                        const checked = selectedCols.includes(col.id);
+                        return (
+                          <button
+                            key={col.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedCols(checked ? selectedCols.filter(id => id !== col.id) : [...selectedCols, col.id]);
+                            }}
+                            className={`flex items-center gap-2 p-2 rounded-lg text-xs font-medium text-left transition ${
+                              checked ? 'bg-emerald-50 text-emerald-900 border border-emerald-200' : 'bg-white text-slate-500 border border-slate-200'
+                            }`}
+                          >
+                            <span>{checked ? '☑' : '☐'}</span>
+                            <span>{col.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 px-5 py-3.5 flex justify-end gap-2.5 border-t border-slate-100">
+                  <button
+                    onClick={() => setIsExportModalOpen(false)}
+                    className="px-4 py-2 text-xs text-slate-600 hover:bg-slate-200 rounded-xl font-medium"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={handleExportExcel}
+                    disabled={selectedCols.length === 0}
+                    className="px-4 py-2 text-xs bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-sm"
+                  >
+                    下載 EXCEL 報表 (.xlsx)
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

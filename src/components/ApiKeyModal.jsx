@@ -4,6 +4,7 @@ import { Key, Eye, EyeOff, ExternalLink, ShieldCheck, Check } from 'lucide-react
 const VALID_MODELS = [
   'gemini-4-argon',
   'gemini-3.8-flash',
+  'gemini-3.6-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.1-pro-preview',
 ];
@@ -98,6 +99,7 @@ export default function ApiKeyModal({ isOpen, onClose, apiKey, onSaveKey, select
             >
               <option value="gemini-4-argon">gemini-4-argon</option>
               <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+              <option value="gemini-3.6-flash">gemini-3.6-flash</option>
               <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite</option>
               <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
             </select>

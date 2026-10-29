@@ -11,6 +11,8 @@ export const VOUCHER_FORMATS = [
   { code: '車資單', label: '車資單', desc: '其他憑證(計程車乘車證明)' },
 ];
 
+export const ZERO_TAX_VOUCHERS = ['99', '收據', '車資單'];
+
 export function normalizeInvoice(inv) {
   if (!inv) return inv;
   let vf = String(inv.voucherFormat || '').trim();
@@ -39,10 +41,25 @@ export function normalizeInvoice(inv) {
     if (m) pm = m[1].padStart(2, '0');
   }
 
+  let sales = parseInt(inv.salesAmount, 10);
+  let tax = parseInt(inv.taxAmount, 10);
+  let total = parseInt(inv.totalAmount, 10);
+
+  // 若為 99、收據、車資單，稅額直接設定為 0
+  if (ZERO_TAX_VOUCHERS.includes(matchedVf)) {
+    tax = 0;
+    const validTotal = !isNaN(total) && total > 0 ? total : (!isNaN(sales) && sales > 0 ? sales : 0);
+    sales = validTotal;
+    total = validTotal;
+  }
+
   return {
     ...inv,
     voucherFormat: matchedVf,
     paymentMonth: pm,
+    salesAmount: isNaN(sales) ? inv.salesAmount : sales,
+    taxAmount: ZERO_TAX_VOUCHERS.includes(matchedVf) ? 0 : (isNaN(tax) ? inv.taxAmount : tax),
+    totalAmount: isNaN(total) ? inv.totalAmount : total,
   };
 }
 

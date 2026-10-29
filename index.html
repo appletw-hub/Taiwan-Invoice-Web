@@ -67,6 +67,8 @@
       { code: '車資單', label: '車資單', desc: '其他憑證(計程車乘車證明)' },
     ];
 
+    const ZERO_TAX_VOUCHERS = ['99', '收據', '車資單'];
+
     function normalizeInvoice(inv) {
       if (!inv) return inv;
       let vf = String(inv.voucherFormat || '').trim();
@@ -95,10 +97,25 @@
         if (m) pm = m[1].padStart(2, '0');
       }
 
+      let sales = parseInt(inv.salesAmount, 10);
+      let tax = parseInt(inv.taxAmount, 10);
+      let total = parseInt(inv.totalAmount, 10);
+
+      // 若為 99、收據、車資單，稅額直接設定為 0
+      if (ZERO_TAX_VOUCHERS.includes(matchedVf)) {
+        tax = 0;
+        const validTotal = !isNaN(total) && total > 0 ? total : (!isNaN(sales) && sales > 0 ? sales : 0);
+        sales = validTotal;
+        total = validTotal;
+      }
+
       return {
         ...inv,
         voucherFormat: matchedVf,
         paymentMonth: pm,
+        salesAmount: isNaN(sales) ? inv.salesAmount : sales,
+        taxAmount: ZERO_TAX_VOUCHERS.includes(matchedVf) ? 0 : (isNaN(tax) ? inv.taxAmount : tax),
+        totalAmount: isNaN(total) ? inv.totalAmount : total,
       };
     }
 
@@ -172,7 +189,7 @@
    - "收據": 其他憑證(免用統一發票收據、小規模營業人收據)
    - "車資單": 其他憑證(計程車乘車證明、計程車收據車資單)
 4. 稅別 (taxType)："taxable" (應稅 5%), "zero_rated" (零稅率), "exempt" (免稅)
-5. 銷售額 (salesAmount, 未稅)、稅額 (taxAmount)、發票金額 (totalAmount, 含稅)。請輸出純整數。若為應稅且無稅額資訊，請以 5% 營業稅精確推算：
+5. 銷售額 (salesAmount, 未稅)、稅額 (taxAmount)、發票金額 (totalAmount, 含稅)。請輸出純整數。特別注意：若憑證格式為 "99"、"收據"、"車資單"，稅額 (taxAmount) 請一律直接設定為 0，且銷售額等於發票金額 (salesAmount = totalAmount)。其餘若為應稅且無稅額資訊，請以 5% 營業稅精確推算：
    - salesAmount = Math.round(totalAmount / 1.05)
    - taxAmount = totalAmount - salesAmount
 6. 發票日期 (invoiceDate) 請統一轉換為西元格式 "YYYY-MM-DD"（例如 115/03/15 -> 2026-03-15）。
@@ -387,8 +404,29 @@
         const list = [...invoices];
         const row = { ...list[index] };
         const currentTaxType = row.taxType || 'taxable';
+        const isZeroTax = ZERO_TAX_VOUCHERS.includes(field === 'voucherFormat' ? value : row.voucherFormat);
 
-        if (field === 'taxType') {
+        if (field === 'voucherFormat') {
+          row.voucherFormat = value;
+          if (ZERO_TAX_VOUCHERS.includes(value)) {
+            row.taxAmount = 0;
+            const amt = Math.max(0, parseInt(row.totalAmount, 10) || parseInt(row.salesAmount, 10) || 0);
+            row.salesAmount = amt;
+            row.totalAmount = amt;
+          }
+        } else if (isZeroTax) {
+          row[field] = value;
+          row.taxAmount = 0;
+          if (field === 'salesAmount') {
+            const amt = Math.max(0, parseInt(value, 10) || 0);
+            row.salesAmount = amt;
+            row.totalAmount = amt;
+          } else if (field === 'totalAmount') {
+            const amt = Math.max(0, parseInt(value, 10) || 0);
+            row.salesAmount = amt;
+            row.totalAmount = amt;
+          }
+        } else if (field === 'taxType') {
           row.taxType = value;
           const res = calculateFromSales(row.salesAmount, value);
           row.taxAmount = res.taxAmount;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Plus, Trash2, Calendar, FileSpreadsheet, RefreshCw, CheckCircle2 } from 'lucide-react';
-import { VOUCHER_FORMATS, TAX_TYPES, calculateFromSales, calculateFromTotal } from '../utils/taxCalculator';
+import { VOUCHER_FORMATS, TAX_TYPES, calculateFromSales, calculateFromTotal, ZERO_TAX_VOUCHERS } from '../utils/taxCalculator';
 
 export default function InvoiceTable({
   invoices,
@@ -16,8 +16,31 @@ export default function InvoiceTable({
   const handleFieldChange = (index, field, value) => {
     const invoice = { ...invoices[index] };
     const currentTaxType = invoice.taxType || 'taxable';
+    const isZeroTax = (ZERO_TAX_VOUCHERS || ['99', '收據', '車資單']).includes(
+      field === 'voucherFormat' ? value : invoice.voucherFormat
+    );
 
-    if (field === 'taxType') {
+    if (field === 'voucherFormat') {
+      invoice.voucherFormat = value;
+      if (['99', '收據', '車資單'].includes(value)) {
+        invoice.taxAmount = 0;
+        const amt = Math.max(0, parseInt(invoice.totalAmount, 10) || parseInt(invoice.salesAmount, 10) || 0);
+        invoice.salesAmount = amt;
+        invoice.totalAmount = amt;
+      }
+    } else if (isZeroTax) {
+      invoice[field] = value;
+      invoice.taxAmount = 0;
+      if (field === 'salesAmount') {
+        const amt = Math.max(0, parseInt(value, 10) || 0);
+        invoice.salesAmount = amt;
+        invoice.totalAmount = amt;
+      } else if (field === 'totalAmount') {
+        const amt = Math.max(0, parseInt(value, 10) || 0);
+        invoice.salesAmount = amt;
+        invoice.totalAmount = amt;
+      }
+    } else if (field === 'taxType') {
       invoice.taxType = value;
       const reCalc = calculateFromSales(invoice.salesAmount, value);
       invoice.taxAmount = reCalc.taxAmount;

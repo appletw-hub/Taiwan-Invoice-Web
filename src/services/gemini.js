@@ -33,7 +33,7 @@ export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = '
    - "taxable" (應稅 5%)
    - "zero_rated" (零稅率)
    - "exempt" (免稅)
-5. 銷售額 (salesAmount, 未稅)、稅額 (taxAmount)、發票金額 (totalAmount, 含稅)。請給予純整數數字（如 1000）。若金額未載明稅額但有載明含稅總額，且為應稅，請以 5% 營業稅精確推算：
+5. 銷售額 (salesAmount, 未稅)、稅額 (taxAmount)、發票金額 (totalAmount, 含稅)。請給予純整數數字（如 1000）。特別注意：若憑證格式為 "99"、"收據"、"車資單"，稅額 (taxAmount) 請一律直接設定為 0，且銷售額等於發票金額 (salesAmount = totalAmount)。其餘若金額未載明稅額但有載明含稅總額，且為應稅，請以 5% 營業稅精確推算：
    - salesAmount = Math.round(totalAmount / 1.05)
    - taxAmount = totalAmount - salesAmount
 6. 發票日期 (invoiceDate) 請統一轉換為西元格式 "YYYY-MM-DD"（例如 115年3月15日 -> 2026-03-15）。

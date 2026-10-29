@@ -53,6 +53,11 @@ export function normalizeInvoice(inv) {
     total = validTotal;
   }
 
+  let desc = String(inv.itemsDescription || '').trim();
+  if (/停車|泊車|臨停/.test(desc) || (/停車|泊車/.test(inv.vendorName || '') && (!desc || /停/.test(desc) || desc === '服務費'))) {
+    desc = '停車費';
+  }
+
   return {
     ...inv,
     voucherFormat: matchedVf,
@@ -60,6 +65,7 @@ export function normalizeInvoice(inv) {
     salesAmount: isNaN(sales) ? inv.salesAmount : sales,
     taxAmount: ZERO_TAX_VOUCHERS.includes(matchedVf) ? 0 : (isNaN(tax) ? inv.taxAmount : tax),
     totalAmount: isNaN(total) ? inv.totalAmount : total,
+    itemsDescription: desc || inv.itemsDescription || '',
   };
 }
 

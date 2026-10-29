@@ -146,12 +146,12 @@
     }
 
     // Google Gemini API 發票解析
-    async function parseInvoicesWithGemini(fileBase64, apiKey, model = 'gemini-3.8-flash') {
+    async function parseInvoicesWithGemini(fileBase64, apiKey, model = 'gemini-3.8-flash', signal) {
       if (!apiKey) {
         throw new Error('請先在右上角設定您的 Google Gemini API Key');
       }
 
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
       const prompt = `
 你是一位精通台灣會計與稅務發票的專家。
@@ -205,7 +205,8 @@
 
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        signal,
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
           contents: [{
             parts: [
@@ -257,6 +258,25 @@
       });
 
       const [isProcessing, setIsProcessing] = useState(false);
+      const [elapsed, setElapsed] = useState(0);
+      const abortRef = useRef(null);
+      const abortReasonRef = useRef('');
+      const REQUEST_TIMEOUT_MS = 180000; // 180 秒逾時
+      const MAX_FILE_MB = 15; // inline PDF 上限（base64 後約 20MB）
+
+      useEffect(() => {
+        if (!isProcessing) return;
+        setElapsed(0);
+        const t = setInterval(() => setElapsed(s => s + 1), 1000);
+        return () => clearInterval(t);
+      }, [isProcessing]);
+
+      const cancelProcessing = (e) => {
+        e?.preventDefault();
+        e?.stopPropagation();
+        abortReasonRef.current = 'user';
+        abortRef.current?.abort();
+      };
       const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
       const [isExportModalOpen, setIsExportModalOpen] = useState(false);
       const [toast, setToast] = useState(null);
@@ -298,12 +318,31 @@
           return;
         }
 
+        const inputEl = e.target;
+
         if (file.type !== 'application/pdf') {
           notify('請上傳 PDF 格式檔案', 'error');
+          inputEl.value = '';
           return;
         }
 
+        const sizeMB = file.size / 1024 / 1024;
+        if (sizeMB > MAX_FILE_MB) {
+          notify(`PDF 檔案 ${sizeMB.toFixed(1)}MB 超過 ${MAX_FILE_MB}MB 上限，請拆分或壓縮後再上傳`, 'error');
+          inputEl.value = '';
+          return;
+        }
+
+        const controller = new AbortController();
+        abortRef.current = controller;
+        abortReasonRef.current = '';
+        const timeoutId = setTimeout(() => {
+          abortReasonRef.current = 'timeout';
+          controller.abort();
+        }, REQUEST_TIMEOUT_MS);
+
         setIsProcessing(true);
+        const t0 = performance.now();
         try {
           const reader = new FileReader();
           const base64 = await new Promise((resolve, reject) => {
@@ -312,7 +351,9 @@
             reader.readAsDataURL(file);
           });
 
-          const results = await parseInvoicesWithGemini(base64, apiKey, model);
+          console.info(`[Gemini] model=${model} size=${sizeMB.toFixed(2)}MB 送出請求`);
+          const results = await parseInvoicesWithGemini(base64, apiKey, model, controller.signal);
+          console.info(`[Gemini] 完成，耗時 ${((performance.now() - t0) / 1000).toFixed(1)}s，共 ${results.length} 筆`);
           if (results.length === 0) {
             notify('未在 PDF 中解析出發票，請確認內容是否清晰', 'error');
           } else {
@@ -320,10 +361,24 @@
             notify(`成功辨識並匯入 ${results.length} 筆發票資料！`);
           }
         } catch (err) {
-          notify(err.message || '解析失敗', 'error');
+          console.error('[Gemini] 失敗：', err);
+          if (err.name === 'AbortError') {
+            notify(
+              abortReasonRef.current === 'user'
+                ? '已取消辨識'
+                : `辨識逾時（超過 ${REQUEST_TIMEOUT_MS / 1000} 秒），請改用 gemini-3.8-flash / gemini-3.5-flash-lite 或拆分 PDF 後重試`,
+              'error'
+            );
+          } else if (err instanceof TypeError) {
+            notify('網路連線失敗，請確認網路或 API Key 是否正確', 'error');
+          } else {
+            notify(err.message || '解析失敗', 'error');
+          }
         } finally {
+          clearTimeout(timeoutId);
+          abortRef.current = null;
           setIsProcessing(false);
-          e.target.value = '';
+          inputEl.value = '';
         }
       };
 
@@ -596,9 +651,20 @@
                   <div className="py-4 space-y-3">
                     <div className="w-10 h-10 border-4 border-brand-navy border-t-transparent rounded-full animate-spin mx-auto"></div>
                     <div className="text-sm font-bold text-slate-800">
-                      AI 正在多模態辨識 PDF 發票中（含手機拍照/紙本掃描與電子發票）...
+                      AI 正在多模態辨識 PDF 發票中（{model}）...
                     </div>
-                    <p className="text-xs text-slate-500">正在逐頁提取賣方統編、未稅金額、稅額與品項明細，請稍候約 5~15 秒</p>
+                    <p className="text-xs text-slate-500">
+                      已等待 <span className="font-mono font-bold text-brand-navy">{elapsed}</span> 秒 / 上限 {REQUEST_TIMEOUT_MS / 1000} 秒
+                      （頁數多或使用 Pro / Argon 模型會較久）
+                    </p>
+                    <button
+                      type="button"
+                      id="cancelProcessingBtn"
+                      onClick={cancelProcessing}
+                      className="px-4 py-1.5 text-xs font-semibold text-rose-700 border border-rose-200 hover:bg-rose-50 rounded-xl transition"
+                    >
+                      取消辨識
+                    </button>
                   </div>
                 ) : (
                   <div className="space-y-3">

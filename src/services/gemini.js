@@ -2,13 +2,13 @@
  * Gemini 多模態 PDF 發票解析服務
  * 支援任何持有 Google AI Studio API Key 的使用者直接在瀏覽器端發送請求
  */
+import { normalizeInvoice } from '../utils/taxCalculator';
 
-export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = 'gemini-3.1-flash-lite') {
+export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = 'gemini-3.8-flash') {
   if (!apiKey) {
     throw new Error('請先設定您的 Google Gemini API Key');
   }
 
-  // 支援 gemini-2.5-flash, gemini-2.0-flash, gemini-1.5-flash
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${apiKey}`;
 
   const prompt = `
@@ -19,12 +19,16 @@ export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = '
 請特別注意：
 1. 一張發票請整理為一個物件（一行一張發票）。
 2. 發票上的多個品項，請合併於 itemsDescription 欄位中（例如："文具組 x2, A4影印紙 x5" 或各品項以分號換行區隔）。
-3. 國稅局憑證代碼 (voucherFormat) 請依據發票類型判斷：
-   - "21": 三聯式統一發票、電子計算機發票
-   - "22": 二聯式收銀機發票、載有稅額之其他憑證
-   - "25": 三聯式收銀機發票、電子發票證明聯(有買方統編)
-   - "28": 海關代徵營業稅繳納證
-   - "99": 其他收據或無稅額憑證
+3. 國稅局扣抵憑證格式代碼 (voucherFormat) 請嚴格依據發票類型判別，只填寫代碼編號（請勿附加額外中文文字）：
+   - "21": 三聯式、電子計算機統一發票
+   - "22I": 二聯式收銀機統一發票、載有稅額憑證
+   - "22Q": 載有稅額之其他(交通票根，例如高鐵票、台鐵火車票、客運票等)憑證
+   - "25": 三聯式收銀機統一發票及電子發票證明聯(有買方統編或電子發票證明聯)
+   - "25G": 公用事業憑證(水費、電費、瓦斯費、公用事業電信繳費通知單)
+   - "50": 勞務報酬單(個人勞務報酬扣繳憑單)
+   - "99": 其他收據與憑證
+   - "收據": 其他憑證(免用統一發票收據、小規模營業人收據)
+   - "車資單": 其他憑證(計程車乘車證明、計程車收據車資單)
 4. 稅別 (taxType)：
    - "taxable" (應稅 5%)
    - "zero_rated" (零稅率)
@@ -33,7 +37,7 @@ export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = '
    - salesAmount = Math.round(totalAmount / 1.05)
    - taxAmount = totalAmount - salesAmount
 6. 發票日期 (invoiceDate) 請統一轉換為西元格式 "YYYY-MM-DD"（例如 115年3月15日 -> 2026-03-15）。
-7. 貨款月份 (paymentMonth) 依發票日期產生 "YYYY-MM"（例如 "2026-03"）。
+7. 貨款月份 (paymentMonth) 依發票日期產生月份，只填寫兩碼月份數字 "MM"（例如 "03"、"10"），請勿包含年份。
 8. 廠商名稱 (vendorName) 與統一編號 (taxId)：若為買受人，請注意提取「賣方 / 銷方」廠商名稱與賣方統一編號；若統編辨識不出或無，可留空字串。
 9. 發票號碼 (invoiceNumber)：例如 "AB-12345678" 或連續 10 碼（2 碼英文 + 8 碼數字）。
 10. 收付款日 (settlementDate) 與備註 (remarks)：若 PDF 上有明顯註記請填入，否則為空字串 ""。
@@ -44,7 +48,7 @@ export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = '
     {
       "vendorName": "廠商名稱",
       "taxId": "統一編號(8碼)",
-      "paymentMonth": "YYYY-MM",
+      "paymentMonth": "03",
       "voucherFormat": "25",
       "invoiceDate": "YYYY-MM-DD",
       "invoiceNumber": "AB-12345678",
@@ -105,13 +109,8 @@ export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = '
 
   try {
     const parsed = JSON.parse(textOutput);
-    if (Array.isArray(parsed)) {
-      return parsed;
-    }
-    if (parsed.invoices && Array.isArray(parsed.invoices)) {
-      return parsed.invoices;
-    }
-    return [];
+    const rawList = Array.isArray(parsed) ? parsed : (parsed.invoices || []);
+    return rawList.map(normalizeInvoice);
   } catch (err) {
     console.error('JSON parse error:', err, textOutput);
     throw new Error('解析模型回應資料失敗，非標準 JSON 格式');

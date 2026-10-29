@@ -1,18 +1,14 @@
 import * as XLSX from 'xlsx';
-import { INVOICE_COLUMNS, VOUCHER_FORMATS } from '../utils/taxCalculator';
+import { INVOICE_COLUMNS } from '../utils/taxCalculator';
 
 /**
- * 匯出發票資料為 Excel (.xlsx)
- * @param {Array} invoices 發票資料陣列
- * @param {Array} selectedColumnIds 使用者勾選欲匯出的欄位 ID 陣列
- * @param {string} fileName 匯出檔案名稱
+ * 準備欲匯出的資料陣列 (憑證格式只保留編號代碼)
  */
-export function exportToExcel(invoices, selectedColumnIds, fileName = '發票明細核對表.xlsx') {
+function buildExportRows(invoices, selectedColumnIds) {
   if (!invoices || invoices.length === 0) {
     throw new Error('沒有可匯出的發票資料');
   }
 
-  // 取得勾選的欄位定義
   const columnsToExport = INVOICE_COLUMNS.filter((col) =>
     selectedColumnIds.includes(col.id)
   );
@@ -21,23 +17,11 @@ export function exportToExcel(invoices, selectedColumnIds, fileName = '發票明
     throw new Error('請至少勾選一個匯出欄位');
   }
 
-  // 格式代碼 map 方便轉文字
-  const voucherMap = VOUCHER_FORMATS.reduce((acc, curr) => {
-    acc[curr.code] = curr.label;
-    return acc;
-  }, {});
-
-  // 建立工作表表頭與資料
   const rows = invoices.map((inv) => {
     const row = {};
     columnsToExport.forEach((col) => {
       let val = inv[col.id] ?? '';
-      
-      // 憑證格式代碼對應
-      if (col.id === 'voucherFormat' && voucherMap[val]) {
-        val = voucherMap[val];
-      }
-      
+
       // 數值型態處理
       if (col.isNumber) {
         val = typeof val === 'number' ? val : (parseInt(val, 10) || 0);
@@ -47,6 +31,15 @@ export function exportToExcel(invoices, selectedColumnIds, fileName = '發票明
     });
     return row;
   });
+
+  return { rows, columnsToExport };
+}
+
+/**
+ * 匯出發票資料為 Excel (.xlsx)
+ */
+export function exportToExcel(invoices, selectedColumnIds, fileName = '發票明細核對表.xlsx') {
+  const { rows, columnsToExport } = buildExportRows(invoices, selectedColumnIds);
 
   const worksheet = XLSX.utils.json_to_sheet(rows);
 
@@ -60,7 +53,7 @@ export function exportToExcel(invoices, selectedColumnIds, fileName = '發票明
       case 'remarks':
         return { wch: 20 };
       case 'voucherFormat':
-        return { wch: 25 };
+        return { wch: 15 };
       case 'invoiceNumber':
       case 'invoiceDate':
       case 'settlementDate':
@@ -74,6 +67,39 @@ export function exportToExcel(invoices, selectedColumnIds, fileName = '發票明
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, '發票明細表');
 
-  // 下載檔案
-  XLSX.writeFile(workbook, fileName.endsWith('.xlsx') ? fileName : `${fileName}.xlsx`);
+  const baseName = fileName.replace(/\.(xlsx|csv)$/i, '');
+  XLSX.writeFile(workbook, `${baseName}.xlsx`);
+}
+
+/**
+ * 匯出發票資料為 CSV (.csv)，內嵌 UTF-8 BOM 避免 Excel 開啟亂碼
+ */
+export function exportToCsv(invoices, selectedColumnIds, fileName = '發票明細核對表.csv') {
+  const { rows } = buildExportRows(invoices, selectedColumnIds);
+
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  const csvContent = XLSX.utils.sheet_to_csv(worksheet);
+
+  // UTF-8 BOM 確保 Windows / Excel 開啟繁體中文不亂碼
+  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const baseName = fileName.replace(/\.(xlsx|csv)$/i, '');
+  link.href = url;
+  link.download = `${baseName}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * 通用匯出入口
+ */
+export function exportInvoices(invoices, selectedColumnIds, fileName, format = 'xlsx') {
+  if (format === 'csv') {
+    exportToCsv(invoices, selectedColumnIds, fileName);
+  } else {
+    exportToExcel(invoices, selectedColumnIds, fileName);
+  }
 }

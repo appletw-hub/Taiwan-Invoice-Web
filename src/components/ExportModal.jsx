@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { FileSpreadsheet, CheckSquare, Square, Download, X } from 'lucide-react';
+import { FileSpreadsheet, FileText, CheckSquare, Square, Download, X } from 'lucide-react';
 import { INVOICE_COLUMNS } from '../utils/taxCalculator';
-import { exportToExcel } from '../services/excel';
+import { exportInvoices } from '../services/excel';
 
 export default function ExportModal({ isOpen, onClose, invoices }) {
   const [selectedCols, setSelectedCols] = useState(
@@ -10,6 +10,7 @@ export default function ExportModal({ isOpen, onClose, invoices }) {
 
   const defaultFileName = `發票明細核對表_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`;
   const [fileName, setFileName] = useState(defaultFileName);
+  const [exportFormat, setExportFormat] = useState('xlsx'); // 'xlsx' | 'csv'
 
   if (!isOpen) return null;
 
@@ -31,7 +32,7 @@ export default function ExportModal({ isOpen, onClose, invoices }) {
 
   const handleExport = () => {
     try {
-      exportToExcel(invoices, selectedCols, fileName || defaultFileName);
+      exportInvoices(invoices, selectedCols, fileName || defaultFileName, exportFormat);
       onClose();
     } catch (err) {
       alert(err.message || '匯出失敗');
@@ -44,11 +45,15 @@ export default function ExportModal({ isOpen, onClose, invoices }) {
         <div className="bg-gradient-to-r from-emerald-600 to-teal-600 p-5 text-white flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="p-2 bg-white/10 rounded-xl">
-              <FileSpreadsheet className="w-5 h-5 text-white" />
+              {exportFormat === 'xlsx' ? (
+                <FileSpreadsheet className="w-5 h-5 text-white" />
+              ) : (
+                <FileText className="w-5 h-5 text-white" />
+              )}
             </div>
             <div>
-              <h2 className="text-base font-bold">自選核對項目匯出 EXCEL</h2>
-              <p className="text-emerald-100 text-xs">勾選需要出現在報表中的欄位</p>
+              <h2 className="text-base font-bold">自選核對項目匯出</h2>
+              <p className="text-emerald-100 text-xs">支援 EXCEL (.xlsx) 與 CSV (.csv) 格式</p>
             </div>
           </div>
           <button
@@ -60,9 +65,42 @@ export default function ExportModal({ isOpen, onClose, invoices }) {
         </div>
 
         <div className="p-5 space-y-4">
+          {/* 匯出格式選擇 */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Excel 檔案名稱
+              匯出格式
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setExportFormat('xlsx')}
+                className={`py-2 px-3 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-2 ${
+                  exportFormat === 'xlsx'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>EXCEL (.xlsx)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setExportFormat('csv')}
+                className={`py-2 px-3 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-2 ${
+                  exportFormat === 'csv'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <FileText className="w-4 h-4" />
+                <span>CSV (.csv)</span>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+              檔案名稱
             </label>
             <div className="flex items-center">
               <input
@@ -72,7 +110,9 @@ export default function ExportModal({ isOpen, onClose, invoices }) {
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 font-medium"
                 placeholder="自訂檔名"
               />
-              <span className="ml-2 text-xs text-slate-400 font-mono">.xlsx</span>
+              <span className="ml-2 text-xs text-slate-400 font-mono">
+                {exportFormat === 'xlsx' ? '.xlsx' : '.csv'}
+              </span>
             </div>
           </div>
 
@@ -142,7 +182,9 @@ export default function ExportModal({ isOpen, onClose, invoices }) {
             className="px-4 py-2 text-xs bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-semibold shadow-sm transition flex items-center gap-1.5"
           >
             <Download className="w-4 h-4" />
-            <span>下載 EXCEL 報表</span>
+            <span>
+              {exportFormat === 'xlsx' ? '下載 EXCEL 報表 (.xlsx)' : '下載 CSV 報表 (.csv)'}
+            </span>
           </button>
         </div>
       </div>

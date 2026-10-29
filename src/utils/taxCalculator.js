@@ -1,11 +1,50 @@
-// 國稅局憑證代碼對應表
+// 國稅局憑證代碼對應表 (憑證格式只顯示編號)
 export const VOUCHER_FORMATS = [
-  { code: '21', label: '21 - 三聯式、電子計算機統一發票' },
-  { code: '22', label: '22 - 二聯式收銀機統一發票、載有稅額憑證' },
-  { code: '25', label: '25 - 三聯式收銀機統一發票及電子發票' },
-  { code: '28', label: '28 - 海關代徵營業稅繳納證扣抵聯' },
-  { code: '99', label: '99 - 其他憑證 / 收據 / 免稅收據' },
+  { code: '21', label: '21', desc: '三聯式、電子計算機統一發票' },
+  { code: '22I', label: '22I', desc: '二聯式收銀機統一發票、載有稅額憑證' },
+  { code: '22Q', label: '22Q', desc: '載有稅額之其他(交通票根)憑證' },
+  { code: '25', label: '25', desc: '三聯式收銀機統一發票及電子發票證明聯' },
+  { code: '25G', label: '25G', desc: '公用事業憑證' },
+  { code: '50', label: '50', desc: '勞務報酬單' },
+  { code: '99', label: '99', desc: '其他收據與憑證' },
+  { code: '收據', label: '收據', desc: '其他憑證(免用統一發票)' },
+  { code: '車資單', label: '車資單', desc: '其他憑證(計程車乘車證明)' },
 ];
+
+export function normalizeInvoice(inv) {
+  if (!inv) return inv;
+  let vf = String(inv.voucherFormat || '').trim();
+  const validCodes = ['21', '22I', '22Q', '25', '25G', '50', '99', '收據', '車資單'];
+  let matchedVf = validCodes.find((c) => vf === c);
+  if (!matchedVf) {
+    if (vf.startsWith('22I')) matchedVf = '22I';
+    else if (vf.startsWith('22Q')) matchedVf = '22Q';
+    else if (vf.startsWith('22')) matchedVf = '22I';
+    else if (vf.startsWith('25G')) matchedVf = '25G';
+    else if (vf.startsWith('25')) matchedVf = '25';
+    else if (vf.startsWith('21')) matchedVf = '21';
+    else if (vf.startsWith('50')) matchedVf = '50';
+    else if (vf.startsWith('99')) matchedVf = '99';
+    else if (vf.includes('車資') || vf.includes('計程車')) matchedVf = '車資單';
+    else if (vf.includes('收據')) matchedVf = '收據';
+    else matchedVf = '25';
+  }
+
+  let pm = String(inv.paymentMonth || '').trim();
+  const matchMonth = pm.match(/^(?:\d{4}[-/])?(\d{1,2})月?$/);
+  if (matchMonth) {
+    pm = matchMonth[1].padStart(2, '0');
+  } else if (!pm && inv.invoiceDate) {
+    const m = String(inv.invoiceDate).match(/^\d{4}[-/](\d{1,2})/);
+    if (m) pm = m[1].padStart(2, '0');
+  }
+
+  return {
+    ...inv,
+    voucherFormat: matchedVf,
+    paymentMonth: pm,
+  };
+}
 
 // 稅制類別
 export const TAX_TYPES = [

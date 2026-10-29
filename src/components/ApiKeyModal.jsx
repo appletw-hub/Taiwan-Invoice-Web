@@ -1,15 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { Key, Eye, EyeOff, ExternalLink, ShieldCheck, Check } from 'lucide-react';
 
+const VALID_MODELS = [
+  'gemini-4-argon',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-pro-preview',
+];
+
 export default function ApiKeyModal({ isOpen, onClose, apiKey, onSaveKey, selectedModel, onSelectModel }) {
   const [tempKey, setTempKey] = useState(apiKey || '');
   const [showKey, setShowKey] = useState(false);
-  const [model, setModel] = useState(selectedModel || 'gemini-2.5-flash');
+  const [model, setModel] = useState(
+    VALID_MODELS.includes(selectedModel) ? selectedModel : 'gemini-3.8-flash'
+  );
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setTempKey(apiKey || '');
-    setModel(selectedModel || 'gemini-2.5-flash');
+    setModel(VALID_MODELS.includes(selectedModel) ? selectedModel : 'gemini-3.8-flash');
   }, [apiKey, selectedModel, isOpen]);
 
   if (!isOpen) return null;
@@ -85,12 +94,12 @@ export default function ApiKeyModal({ isOpen, onClose, apiKey, onSaveKey, select
             <select
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 bg-white"
+              className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 bg-white font-mono"
             >
-              <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (超輕量、極速辨識)</option>
-              <option value="gemini-3.6-flash">Gemini 3.6 Flash (最新旗艦款)</option>
-              <option value="gemini-2.0-flash">Gemini 2.0 Flash (穩定推薦款)</option>
-              <option value="gemini-1.5-flash">Gemini 1.5 Flash (經典穩定版)</option>
+              <option value="gemini-4-argon">gemini-4-argon</option>
+              <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+              <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite</option>
+              <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
             </select>
           </div>
         </div>

@@ -41,8 +41,9 @@ export default function InvoiceTable({
 
   const applyBatchMonth = () => {
     if (!batchMonth) return;
+    const cleanMonth = batchMonth.replace(/^(?:\d{4}[-/])?(\d{1,2})月?$/, '$1').padStart(2, '0');
     invoices.forEach((_, idx) => {
-      handleFieldChange(idx, 'paymentMonth', batchMonth);
+      handleFieldChange(idx, 'paymentMonth', cleanMonth);
     });
   };
 
@@ -76,10 +77,10 @@ export default function InvoiceTable({
             <span className="text-slate-500 font-medium">批次月份:</span>
             <input
               type="text"
-              placeholder="YYYY-MM"
+              placeholder="MM"
               value={batchMonth}
               onChange={(e) => setBatchMonth(e.target.value)}
-              className="w-20 px-1 py-0.5 border-b border-slate-300 text-xs focus:outline-none focus:border-blue-500 font-mono"
+              className="w-12 px-1 py-0.5 border-b border-slate-300 text-xs focus:outline-none focus:border-blue-500 font-mono text-center"
             />
             <button
               onClick={applyBatchMonth}
@@ -126,7 +127,7 @@ export default function InvoiceTable({
             className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold shadow-sm shadow-emerald-500/20 transition"
           >
             <FileSpreadsheet className="w-4 h-4" />
-            <span>自選核對欄位匯出 EXCEL</span>
+            <span>自選核對項目匯出 (EXCEL / CSV)</span>
           </button>
         </div>
       </div>
@@ -187,8 +188,8 @@ export default function InvoiceTable({
                     type="text"
                     value={inv.paymentMonth || ''}
                     onChange={(e) => handleFieldChange(idx, 'paymentMonth', e.target.value)}
-                    className="w-full px-2 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono"
-                    placeholder="YYYY-MM"
+                    className="w-full px-2 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono text-center"
+                    placeholder="MM"
                   />
                 </td>
 
@@ -197,11 +198,12 @@ export default function InvoiceTable({
                   <select
                     value={inv.voucherFormat || '25'}
                     onChange={(e) => handleFieldChange(idx, 'voucherFormat', e.target.value)}
-                    className="w-full px-1.5 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs"
+                    className="w-full px-1.5 py-1 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded bg-transparent focus:bg-white text-xs font-mono"
+                    title={VOUCHER_FORMATS.find((v) => v.code === inv.voucherFormat)?.desc || ''}
                   >
                     {VOUCHER_FORMATS.map((vf) => (
-                      <option key={vf.code} value={vf.code}>
-                        {vf.label}
+                      <option key={vf.code} value={vf.code} title={vf.desc}>
+                        {vf.code}
                       </option>
                     ))}
                   </select>

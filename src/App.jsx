@@ -7,16 +7,25 @@ import ApiKeyModal from './components/ApiKeyModal';
 import ExportModal from './components/ExportModal';
 import { parseInvoicesFromPdf } from './services/gemini';
 
+import { normalizeInvoice } from './utils/taxCalculator';
+
+const VALID_MODELS = [
+  'gemini-4-argon',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-pro-preview',
+];
+
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
   const [selectedModel, setSelectedModel] = useState(() => {
     const m = localStorage.getItem('gemini_model');
-    return (!m || m === 'gemini-2.5-flash' || m === 'gemini-2.0-flash') ? 'gemini-3.1-flash-lite' : m;
+    return (!m || !VALID_MODELS.includes(m)) ? 'gemini-3.8-flash' : m;
   });
   const [invoices, setInvoices] = useState(() => {
     try {
       const saved = localStorage.getItem('invoices_draft');
-      return saved ? JSON.parse(saved) : [];
+      return saved ? JSON.parse(saved).map(normalizeInvoice) : [];
     } catch {
       return [];
     }
@@ -97,7 +106,7 @@ export default function App() {
 
   const handleAddInvoice = () => {
     const today = new Date().toISOString().slice(0, 10);
-    const month = today.slice(0, 7);
+    const month = today.slice(5, 7);
     const newInvoice = {
       vendorName: '',
       taxId: '',
@@ -129,7 +138,7 @@ export default function App() {
       {
         vendorName: '聯發資訊工程有限公司',
         taxId: '28475931',
-        paymentMonth: '2026-09',
+        paymentMonth: '09',
         voucherFormat: '25',
         invoiceDate: '2026-09-12',
         invoiceNumber: 'QD-78921453',
@@ -144,7 +153,7 @@ export default function App() {
       {
         vendorName: '宏達文具辦公用品商行',
         taxId: '54821639',
-        paymentMonth: '2026-09',
+        paymentMonth: '09',
         voucherFormat: '21',
         invoiceDate: '2026-09-15',
         invoiceNumber: 'QD-88124930',
@@ -159,8 +168,8 @@ export default function App() {
       {
         vendorName: '台灣農產運銷合作社',
         taxId: '10482934',
-        paymentMonth: '2026-09',
-        voucherFormat: '22',
+        paymentMonth: '09',
+        voucherFormat: '22I',
         invoiceDate: '2026-09-18',
         invoiceNumber: 'QD-93821045',
         taxType: 'exempt',

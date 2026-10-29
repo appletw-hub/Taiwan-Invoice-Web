@@ -261,7 +261,7 @@
       const [elapsed, setElapsed] = useState(0);
       const abortRef = useRef(null);
       const abortReasonRef = useRef('');
-      const REQUEST_TIMEOUT_MS = 180000; // 180 秒逾時
+      const REQUEST_TIMEOUT_MS = 300000; // 300 秒 (5 分鐘) 逾時
       const MAX_FILE_MB = 15; // inline PDF 上限（base64 後約 20MB）
 
       useEffect(() => {

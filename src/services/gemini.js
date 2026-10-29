@@ -87,7 +87,7 @@ export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = '
   };
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 180000);
+  const timeoutId = setTimeout(() => controller.abort(), 300000);
   let response;
   try {
     response = await fetch(endpoint, {
@@ -100,7 +100,7 @@ export async function parseInvoicesFromPdf(fileBase64, apiKey, selectedModel = '
     });
   } catch (err) {
     if (err.name === 'AbortError') {
-      throw new Error('辨識逾時（超過 180 秒），請改用較快模型或拆分 PDF 後重試');
+      throw new Error('辨識逾時（超過 300 秒 / 5 分鐘），請改用較快模型或拆分 PDF 後重試');
     }
     throw err;
   } finally {
